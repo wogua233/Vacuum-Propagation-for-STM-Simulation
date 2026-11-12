@@ -1,0 +1,140 @@
+--- native_xc/src/qs_scf_output.F
++++ round4/src/qs_scf_output.F
+@@ -9,6 +9,8 @@
+    USE admm_types,                      ONLY: admm_type
+    USE admm_utils,                      ONLY: admm_correct_for_eigenvalues,&
+                                               admm_uncorrect_for_eigenvalues
++   USE basis_set_types, ONLY: get_gto_basis_set, gto_basis_set_type
++   USE orbital_pointers, ONLY: ncoset, indco
+    USE atomic_kind_types,               ONLY: atomic_kind_type
+    USE cp_blacs_env,                    ONLY: cp_blacs_env_type
+    USE cp_control_types,                ONLY: dft_control_type
+@@ -18,7 +20,7 @@
+    USE cp_fm_struct,                    ONLY: cp_fm_struct_create,&
+                                               cp_fm_struct_release,&
+                                               cp_fm_struct_type
+-   USE cp_fm_types,                     ONLY: cp_fm_init_random,&
++   USE cp_fm_types,                     ONLY: cp_fm_get_submatrix, cp_fm_init_random,&
+                                               cp_fm_type
+    USE cp_log_handling,                 ONLY: cp_get_default_logger,&
+                                               cp_logger_type
+@@ -62,7 +64,7 @@
+    USE qs_energy_types,                 ONLY: qs_energy_type
+    USE qs_environment_types,            ONLY: get_qs_env,&
+                                               qs_environment_type
+-   USE qs_kind_types,                   ONLY: qs_kind_type
++   USE qs_kind_types,                   ONLY: get_qs_kind, qs_kind_type
+    USE qs_mo_io,                        ONLY: write_mo_set_to_output_unit
+    USE qs_mo_methods,                   ONLY: calculate_magnitude,&
+                                               calculate_orthonormality,&
+@@ -438,6 +440,18 @@
+                END IF
+             END IF
+ 
++            ! Research export: preserve both complex parts and native AO basis.
++            IF (final_mos .AND. print_eigvecs) THEN
++                  IF (do_kpoints) THEN
++                     CALL research_export_kpoint(kpoints%kp_env(ikp)%kpoint_env%mos(:, ispin), &
++                          ikp, ispin, &
++                          kpoints%kp_env(ikp)%kpoint_env%xkp, kpoints%kp_env(ikp)%kpoint_env%wkp, &
++                          particle_set, qs_kind_set)
++                  ELSE
++                     CALL research_export_gamma(mo_set, ispin, particle_set, qs_kind_set)
++                  END IF
++            END IF
++
+             nmos_occ(ispin) = MAX(nmos_occ(ispin), COUNT(mo_set%occupation_numbers > occup_stats_occ_threshold))
+ 
+             ! Deallocate temporary objects needed for OT
+@@ -475,6 +489,91 @@
+       CALL timestop(handle)
+ 
+    END SUBROUTINE qs_scf_write_mos
++
++   SUBROUTINE research_export_gamma(mo, spin, particles, qskinds)
++      TYPE(mo_set_type), INTENT(IN) :: mo
++      INTEGER, INTENT(IN) :: spin
++      TYPE(particle_type), DIMENSION(:), POINTER :: particles
++      TYPE(qs_kind_type), DIMENSION(:), POINTER :: qskinds
++      CALL research_export_component(mo, mo, 0, spin, 1, (/0.0_dp,0.0_dp,0.0_dp/), 1.0_dp)
++      IF (spin == 1 .AND. mo%mo_coeff%matrix_struct%para_env%is_source()) &
++         CALL research_export_basis(particles,qskinds)
++   END SUBROUTINE
++
++   SUBROUTINE research_export_kpoint(mos, ikp, spin, xkp, weight, particles, qskinds)
++      TYPE(mo_set_type), DIMENSION(:), INTENT(IN) :: mos
++      INTEGER, INTENT(IN) :: ikp, spin
++      REAL(KIND=dp), INTENT(IN) :: xkp(3), weight
++      TYPE(particle_type), DIMENSION(:), POINTER :: particles
++      TYPE(qs_kind_type), DIMENSION(:), POINTER :: qskinds
++      INTEGER :: part
++      DO part=1,SIZE(mos)
++         CALL research_export_component(mos(part),mos(1),ikp,spin,part,xkp,weight)
++      END DO
++      IF (ikp == 1 .AND. spin == 1 .AND. mos(1)%mo_coeff%matrix_struct%para_env%is_source()) &
++         CALL research_export_basis(particles,qskinds)
++   END SUBROUTINE
++
++   SUBROUTINE research_export_component(mo, energy_mo, ikp, spin, part, xkp, weight)
++      TYPE(mo_set_type), INTENT(IN) :: mo, energy_mo
++      INTEGER, INTENT(IN) :: ikp,spin,part
++      REAL(KIND=dp), INTENT(IN) :: xkp(3),weight
++      REAL(KIND=dp), ALLOCATABLE :: block(:,:)
++      INTEGER :: i,lo,hi,unit
++      CHARACTER(LEN=100) :: fname
++      ! Deliberately export all computed states; no hidden energy selection.
++      lo=1;hi=mo%nmo
++      ALLOCATE(block(mo%nao,hi-lo+1))
++      CALL cp_fm_get_submatrix(mo%mo_coeff,block,start_col=lo)
++      IF (mo%mo_coeff%matrix_struct%para_env%is_source()) THEN
++         WRITE(fname,'("research_C_k",I3.3,"_s",I1,"_p",I1,".dat")') ikp,spin,part
++         OPEN(NEWUNIT=unit,FILE=TRIM(fname),STATUS='REPLACE',ACTION='WRITE')
++         WRITE(unit,*) mo%nao,hi-lo+1,lo,ikp,spin,part
++         WRITE(unit,'(*(ES25.16E3,1X))') xkp,weight,energy_mo%mu
++         WRITE(unit,'(*(ES25.16E3,1X))') energy_mo%eigenvalues(lo:hi)
++         WRITE(unit,'(*(ES25.16E3,1X))') energy_mo%occupation_numbers(lo:hi)
++         DO i=1,mo%nao
++            WRITE(unit,'(*(ES25.16E3,1X))') block(i,:)
++         END DO
++         CLOSE(unit)
++      END IF
++      DEALLOCATE(block)
++   END SUBROUTINE
++
++   SUBROUTINE research_export_basis(particles,qskinds)
++      TYPE(particle_type), DIMENSION(:), POINTER :: particles
++      TYPE(qs_kind_type), DIMENSION(:), POINTER :: qskinds
++      TYPE(gto_basis_set_type), POINTER :: basis
++      INTEGER, DIMENSION(:), POINTER :: lmax,lmin,npgf,nsgf
++      INTEGER, DIMENSION(:,:), POINTER :: first
++      REAL(KIND=dp), DIMENSION(:,:), POINTER :: sphi,zeta
++      INTEGER :: atom,kind,nset,iset,sgfa,ipgf,mono,j,offset,unit,row
++      OPEN(NEWUNIT=unit,FILE='research_basis.dat',STATUS='REPLACE',ACTION='WRITE')
++      WRITE(unit,'(A)') '# ao atom x_bohr y_bohr z_bohr lx ly lz exponent_bohr-2 native_coefficient'
++      offset=0
++      DO atom=1,SIZE(particles)
++         kind=particles(atom)%atomic_kind%kind_number
++         CALL get_qs_kind(qskinds(kind),basis_set=basis,basis_type='ORB')
++         CALL get_gto_basis_set(basis,first_sgf=first,lmax=lmax,lmin=lmin,npgf=npgf, &
++                               nset=nset,nsgf_set=nsgf,sphi=sphi,zet=zeta)
++         DO iset=1,nset
++            sgfa=first(1,iset)
++            DO j=1,nsgf(iset)
++               DO ipgf=1,npgf(iset)
++                  DO mono=1,ncoset(lmax(iset))
++                     row=(ipgf-1)*ncoset(lmax(iset))+mono
++                     IF (sphi(row,sgfa+j-1)==0.0_dp) CYCLE
++                     WRITE(unit,'(2(I8,1X),3(ES25.16E3,1X),3(I3,1X),2(ES25.16E3,1X))') &
++                         offset+j,atom,particles(atom)%r,indco(:,mono),zeta(ipgf,iset),sphi(row,sgfa+j-1)
++                  END DO
++               END DO
++            END DO
++            offset=offset+nsgf(iset)
++         END DO
++      END DO
++      CLOSE(unit)
++   END SUBROUTINE
++
+ 
+ ! **************************************************************************************************
+ !> \brief writes basic information obtained in a scf outer loop step

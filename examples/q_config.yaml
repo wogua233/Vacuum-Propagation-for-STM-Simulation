@@ -1,0 +1,12 @@
+mode: q
+source_npz: source_jet.npz
+# Optional provenance only; the package consumes the portable NPZ after
+# CP2K-specific export/interpolation has been completed.
+cp2k_outputs:
+  mo_log: /path/to/project-1_0.MOLog
+  signed_source: /path/to/source_boundary.npy
+  total_potential: /path/to/total_potential_eV.npy
+vacuum_reference_eV: 5.0
+distance_A: 6.0
+length_A: 3.0
+output: q_result.json

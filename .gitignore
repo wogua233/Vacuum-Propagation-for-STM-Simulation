@@ -1,0 +1,8 @@
+__pycache__/
+*.egg-info/
+*.npy
+*.npz
+*_result.json
+vp_metadata.json
+
+build/

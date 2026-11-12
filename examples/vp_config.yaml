@@ -1,0 +1,15 @@
+mode: vp
+boundary_npy: boundary.npy
+potential_npy: total_potential_eV.npy
+z_npy: z_grid_A.npy
+# Optional provenance paths; arrays above are the portable solver interface.
+cp2k_outputs:
+  mo_log: /path/to/project-1_0.MOLog
+  total_potential: /path/to/total_potential_eV.npy
+energy_eV: -0.15
+spacing_A: [0.20, 0.20, 0.20]
+heights_A: [6.0, 8.0, 10.0]
+tolerance: 1.0e-8
+maxiter: 1000
+output_npz: vp_result.npz
+metadata_json: vp_metadata.json

@@ -1,0 +1,13 @@
+[build-system]
+requires=["setuptools>=61"]
+build-backend="setuptools.build_meta"
+[project]
+name="vpstm"
+version="0.1.0"
+description="Near-source Q screening and real-space vacuum propagation for STM wavefunctions"
+requires-python=">=3.7"
+dependencies=["numpy>=1.19","scipy>=1.5","pyyaml>=5.4"]
+[project.scripts]
+vpstm="vpstm.cli:main"
+[tool.setuptools.packages.find]
+where=["src"]

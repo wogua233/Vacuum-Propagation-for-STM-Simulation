@@ -1,0 +1,68 @@
+--- native_xc/src/qs_scf_diagonalization.F
++++ round4/src/qs_scf_diagonalization.F
+@@ -19,6 +19,7 @@
+                                               cp_cfm_scale_and_add_fm
+    USE cp_cfm_diag,                     ONLY: cp_cfm_geeig,&
+                                               cp_cfm_geeig_canon
++   USE cp_cfm_types, ONLY: cp_cfm_get_submatrix
+    USE cp_cfm_types,                    ONLY: cp_cfm_create,&
+                                               cp_cfm_release,&
+                                               cp_cfm_to_cfm,&
+@@ -575,6 +576,7 @@
+             DO ispin = 1, nspin
+                kp => kpoints%kp_env(ikp)%kpoint_env
+                CALL cp_cfm_to_cfm(kpoints%scf_diis_buffer%smat(ikp), csmat)
++               IF (ispin == 1) CALL research_overlap_dump(csmat,kp%nkpoint,kp%mos(1,ispin)%nao)
+ 
+                CALL cp_cfm_scale(czero, cksmat)
+                DO jb = 1, nb
+@@ -626,6 +628,8 @@
+                ! Each kpoint group has now information on a kpoint to be diagonalized
+                ! General eigensolver Hermite or Symmetric
+                kp => kpoints%kp_env(ikp)%kpoint_env
++               IF (.NOT. use_real_wfn .AND. ispin == 1) &
++                  CALL research_overlap_dump(csmat, kp%nkpoint, kp%mos(1,ispin)%nao)
+                IF (use_real_wfn) THEN
+                   CALL get_mo_set(kp%mos(1, ispin), mo_coeff=mo_coeff, eigenvalues=eigenvalues)
+                   IF (scf_env%cholesky_method == cholesky_off) THEN
+@@ -707,6 +711,40 @@
+ 
+    END SUBROUTINE do_general_diag_kp
+ 
++   SUBROUTINE research_overlap_dump(matrix, ikp, n)
++      TYPE(cp_cfm_type), INTENT(IN) :: matrix
++      INTEGER, INTENT(IN) :: ikp,n
++      COMPLEX(KIND=dp), ALLOCATABLE :: block(:,:)
++      CHARACTER(LEN=100) :: fname
++      INTEGER :: unit,i,part
++      LOGICAL :: exists
++      WRITE(fname,'("research_S_k",I3.3,"_p1.dat")') ikp
++      INQUIRE(FILE=TRIM(fname),EXIST=exists)
++      ! All ranks check shared file; synchronization avoids a partial-file race.
++      CALL matrix%matrix_struct%para_env%bcast(exists)
++      IF (exists) RETURN
++      ALLOCATE(block(n,n))
++      CALL cp_cfm_get_submatrix(matrix,block)
++      IF (matrix%matrix_struct%para_env%is_source()) THEN
++         DO part=1,2
++            WRITE(fname,'("research_S_k",I3.3,"_p",I1,".dat")') ikp,part
++            OPEN(NEWUNIT=unit,FILE=TRIM(fname),STATUS='REPLACE',ACTION='WRITE')
++            WRITE(unit,*) n
++            DO i=1,n
++               IF (part==1) THEN
++                  WRITE(unit,'(*(ES25.16E3,1X))') REAL(block(i,:),dp)
++               ELSE
++                  WRITE(unit,'(*(ES25.16E3,1X))') AIMAG(block(i,:))
++               END IF
++            END DO
++            CLOSE(unit)
++         END DO
++      END IF
++      CALL matrix%matrix_struct%para_env%sync()
++      DEALLOCATE(block)
++   END SUBROUTINE
++
++
+ ! **************************************************************************************************
+ !> \brief inner loop within MOS subspace, to refine occupation and density,
+ !>        before next diagonalization of the Hamiltonian

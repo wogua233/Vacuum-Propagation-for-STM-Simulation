@@ -1,0 +1,104 @@
+--- a/src/input_cp2k_print_dft.F
++++ b/src/input_cp2k_print_dft.F
+@@ -882,6 +882,25 @@
+       CALL section_add_subsection(section, subsection)
+       CALL section_release(subsection)
+ 
++      ! Native final-density local XC output, separate from the ZMP print key.
++      CALL cp_print_key_section_create(print_key, __LOCATION__, "native_xc_cube", &
++                                       description="Print native local LDA/GGA XC potentials from the final density "// &
++                                       "in Hartree, one cube per spin. GPW only; no Hartree or external potential. "// &
++                                       "Does not include nonlocal exchange, GAPW, ADMM, SIC or meta-GGA operators.", &
++                                       print_level=debug_print_level, filename="")
++      CALL keyword_create(keyword, __LOCATION__, name="stride", &
++                          description="Cube grid stride in X,Y,Z; one number applies to all directions.", &
++                          usage="STRIDE 1 1 1", n_var=-1, default_i_vals=(/1, 1, 1/), type_of_var=integer_t)
++      CALL section_add_keyword(print_key, keyword)
++      CALL keyword_release(keyword)
++      CALL keyword_create(keyword, __LOCATION__, name="APPEND", &
++                          description="Append cube frames instead of replacing them", &
++                          default_l_val=.FALSE., lone_keyword_l_val=.TRUE.)
++      CALL section_add_keyword(print_key, keyword)
++      CALL keyword_release(keyword)
++      CALL section_add_subsection(section, print_key)
++      CALL section_release(print_key)
++
+       ! ZMP adding the print section for  the v_xc cube
+       CALL cp_print_key_section_create(print_key, __LOCATION__, "v_xc_cube", &
+                                        description="Controls the printing of a cube file with xc"// &
+--- a/src/qs_scf_post_gpw.F
++++ b/src/qs_scf_post_gpw.F
+@@ -172,6 +172,7 @@
+                                               neighbor_list_set_p_type
+    USE qs_ot_eigensolver,               ONLY: ot_eigensolver
+    USE qs_pdos,                         ONLY: calculate_projected_dos
++   USE qs_vxc,                          ONLY: qs_xc_density
+    USE qs_resp,                         ONLY: resp_fit
+    USE qs_rho0_types,                   ONLY: get_rho0_mpole,&
+                                               mpole_rho_atom,&
+@@ -2457,6 +2458,65 @@
+          CALL auxbas_pw_pool%give_back_pw(aux_r)
+       END IF
+ 
++      ! Evaluate with CP2K's own density, XC settings and native XC kernel.
++      ! qs_xc_density calls the same xc_vxc_pw_create1 as qs_vxc_create,
++      ! but avoids changing the SCF energy/virial and exports the final density.
++      IF (BTEST(cp_print_key_should_output(logger%iter_info, input, &
++                                           "DFT%PRINT%NATIVE_XC_CUBE"), cp_p_file)) THEN
++         BLOCK
++            TYPE(pw_r3d_rs_type), ALLOCATABLE :: native_vxc(:)
++            LOGICAL :: native_tau_valid, native_hfx
++            TYPE(section_vals_type), POINTER :: native_hfx_section
++
++            IF (dft_control%qs_control%gapw .OR. dft_control%qs_control%gapw_xc .OR. &
++                dft_control%do_admm .OR. dft_control%apply_external_density .OR. &
++                dft_control%apply_external_vxc) THEN
++               CPABORT("NATIVE_XC_CUBE supports ordinary GPW LDA/GGA only")
++            END IF
++            CALL qs_rho_get(rho, tau_r_valid=native_tau_valid)
++            native_hfx_section => section_vals_get_subs_vals(input, "DFT%XC%HF")
++            CALL section_vals_get(native_hfx_section, explicit=native_hfx)
++            IF (native_tau_valid .OR. native_hfx) THEN
++               CPABORT("NATIVE_XC_CUBE does not export meta-GGA or nonlocal exchange operators")
++            END IF
++            CALL get_qs_env(qs_env, pw_env=pw_env)
++            CALL pw_env_get(pw_env, auxbas_pw_pool=auxbas_pw_pool)
++            ALLOCATE (native_vxc(dft_control%nspins))
++            DO ispin = 1, dft_control%nspins
++               CALL auxbas_pw_pool%create_pw(native_vxc(ispin))
++            END DO
++            xc_section => section_vals_get_subs_vals(input, "DFT%XC")
++            CALL qs_xc_density(ks_env=qs_env%ks_env, rho_struct=rho, xc_section=xc_section, &
++                               dispersion_env=qs_env%dispersion_env, vxc=native_vxc)
++            append_cube = section_get_lval(input, "DFT%PRINT%NATIVE_XC_CUBE%APPEND")
++            my_pos_cube = "REWIND"
++            IF (append_cube) my_pos_cube = "APPEND"
++            mpi_io = .TRUE.
++            DO ispin = 1, dft_control%nspins
++               filename = "v_xc"
++               IF (dft_control%nspins == 2) THEN
++                  IF (ispin == 1) filename = "v_xc_alpha"
++                  IF (ispin == 2) filename = "v_xc_beta"
++               END IF
++               unit_nr = cp_print_key_unit_nr(logger, input, "DFT%PRINT%NATIVE_XC_CUBE", &
++                                              extension=".cube", middle_name=TRIM(filename), &
++                                              file_position=my_pos_cube, mpi_io=mpi_io)
++               ! The native XC array is already in Hartree; unlike stored
++               ! v_hartree_rspace it has NOT been multiplied by pw_grid%dvol.
++               CALL cp_pw_to_cube(native_vxc(ispin), unit_nr, "NATIVE LOCAL XC POTENTIAL [hartree]", &
++                                  particles=particles, &
++                                  stride=section_get_ivals(input, "DFT%PRINT%NATIVE_XC_CUBE%STRIDE"), &
++                                  mpi_io=mpi_io)
++               CALL cp_print_key_finished_output(unit_nr, logger, input, &
++                                                 "DFT%PRINT%NATIVE_XC_CUBE", mpi_io=mpi_io)
++               CALL auxbas_pw_pool%give_back_pw(native_vxc(ispin))
++            END DO
++            DEALLOCATE (native_vxc)
++            IF (output_unit > 0) WRITE (output_unit, '(A)') &
++               " NATIVE_XC| Final-density local XC exported in Hartree using the native CP2K kernel."
++         END BLOCK
++      END IF
++
+       ! Print the external potential
+       IF (BTEST(cp_print_key_should_output(logger%iter_info, input, &
+                                            "DFT%PRINT%EXTERNAL_POTENTIAL_CUBE"), cp_p_file)) THEN
