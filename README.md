@@ -43,7 +43,17 @@ The solver uses periodic lateral boundary conditions, a fixed source boundary, a
 
 The public interface expects a **signed wavefunction source boundary** and the **total local effective potential**. Standard CP2K Cube output may provide density, Hartree, XC, and local pseudopotential components separately, but it does not provide the total potential in the exact format required by this solver in every CP2K release.
 
-This project used a small CP2K source modification to export the total potential during the SCF run. The relevant patches are in `cp2k_patch/`. In particular, `NATIVE_XC_CUBE.patch` adds the ordinary-GPW/PBE XC export used when constructing the total potential; its application and validation steps are summarized in `cp2k_patch/NATIVE_XC_CUBE.md`. Apply it only to the matching CP2K source revision, rebuild CP2K, and verify the output against the SCF energy and grid metadata before using it. Do not apply the patch blindly across CP2K versions: inspect the patch context and retain the patched executable hash in your provenance record.
+This project uses a small CP2K source modification to export the native local XC component during the SCF calculation. The VP input is a **total local effective potential**, assembled from the exported XC component together with the Hartree, ionic/local-pseudopotential, and any other explicitly retained local terms. The source modification is not hidden: the exact patch is `cp2k_patch/NATIVE_XC_CUBE.patch`, and the step-by-step instructions are in `cp2k_patch/NATIVE_XC_CUBE.md`.
+
+The reproducible CP2K modification is:
+
+1. Copy the CP2K source tree and enter its root directory.
+2. Apply the repository patch with `patch -p1 < /path/to/vpstm/cp2k_patch/NATIVE_XC_CUBE.patch`.
+3. Confirm that the patch changes `src/input_cp2k_print_dft.F` and `src/qs_scf_post_gpw.F` and registers the new `NATIVE_XC_CUBE` input section.
+4. Rebuild the executable, for example with `make -j24 ARCH=local VERSION=psmp`.
+5. Add `&NATIVE_XC_CUBE ON` under `&DFT/&PRINT` in the CP2K input, run a small validation SCF, and check the generated alpha/beta XC Cube files and the SCF log.
+
+The patch was developed for CP2K 2024.2. Do not apply it blindly across CP2K versions: inspect the patch context, resolve any source conflicts, verify the Cube grid and units, and retain the patched executable hash in the provenance record.
 
 A typical workflow is:
 

@@ -1,8 +1,8 @@
 # CP2K total-potential export prerequisite
 
-The VP solver needs a total local effective potential on the same Cartesian grid as the exported source wavefunction. The CP2K 2024.2 workflow used for this project adds the input section `DFT/PRINT/NATIVE_XC_CUBE`; its source patch is `NATIVE_XC_CUBE.patch`.
+The VP solver needs a total local effective potential on the same Cartesian grid as the exported source wavefunction. The CP2K 2024.2 workflow used for this project adds the input section `DFT/PRINT/NATIVE_XC_CUBE`; its source patch is `NATIVE_XC_CUBE.patch`. The patch exports the native local XC component. It does not by itself write the complete total potential; the data-preparation step combines this component with the Hartree and local ionic/pseudopotential terms.
 
-The patch changes two CP2K source files (`src/input_cp2k_print_dft.F` and `src/qs_scf_post_gpw.F`). It registers the new input section and writes the final-density local XC potential for ordinary GPW/PBE calculations. It does not replace the Hartree, ionic, or local pseudopotential terms; those terms must be combined by the data-preparation step to produce `total_potential_eV.npy`.
+The patch changes two CP2K source files (`src/input_cp2k_print_dft.F` and `src/qs_scf_post_gpw.F`). The first registers the new input section; the second evaluates the final-density local XC potential and writes it as a Cube file for ordinary GPW/PBE calculations. The data-preparation step converts the Cube from Hartree to eV and combines it with the other local potential components to produce `total_potential_eV.npy`.
 
 Use only with the matching CP2K revision (the patch was developed for CP2K 2024.2):
 
